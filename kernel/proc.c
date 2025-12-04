@@ -131,6 +131,23 @@ found:
     release(&p->lock);
     return 0;
   }
+  // Allocate a page for USYSCALL.
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    // Nếu fail, free các thứ đã alloc trước đó (tương tự trapframe)
+    kfree((void*)p->trapframe);
+    p->trapframe = 0;
+    if(p->kstack)
+      kfree((void*)p->kstack);
+    p->kstack = 0;
+    p->pagetable = 0;
+    p->sz = 0;
+    p->pid = 0;
+    p->parent = 0;
+    release(&p->lock);
+    return 0;
+  }
+  memset((char *)p->usyscall, 0, PGSIZE);
+  p->usyscall->pid = p->pid;  // Set PID của process hiện tại
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -160,6 +177,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->usyscall)
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -201,6 +221,14 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
+  // Map the usyscall page just like trapframe, read-only for user.
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+    (uint64)p->usyscall, PTE_R | PTE_U | PTE_V) < 0){
+  uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  uvmfree(pagetable, 0);
+  return 0;
+  }
 
   return pagetable;
 }
@@ -212,6 +240,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);
   uvmfree(pagetable, sz);
 }
 
