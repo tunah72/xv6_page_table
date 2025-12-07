@@ -449,3 +449,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+// Hàm phụ trợ để in đệ quy với thụt đầu dòng (level)
+// level 2: in "..", level 1: in ".. ..", level 0: in ".. .. .."
+void
+vmprint_walk(pagetable_t pagetable, int level)
+{
+  // Có 512 mục (PTE) trong một trang bảng trang (2^9)
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    
+    // Chỉ in nếu PTE hợp lệ (bit PTE_V được bật)
+    if(pte & PTE_V){
+      // In ra theo định dạng yêu cầu của đề bài
+      // Dựa vào level để in số lượng dấu chấm ".."
+      for(int j = 0; j < (3 - level); j++){
+        printf(" ..");
+      }
+      
+      // In index, giá trị pte (hex), và địa chỉ vật lý (pa)
+      uint64 pa = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+
+      // Nếu level > 0, nghĩa là node này trỏ tới một bảng trang con (không phải lá)
+      // Tiếp tục đệ quy xuống dưới
+      // (pte & (PTE_R|PTE_W|PTE_X)) == 0  --> Kiểm tra xem đây có phải là node trung gian không
+      if(level > 0){
+        pagetable_t child = (pagetable_t)PTE2PA(pte);
+        vmprint_walk(child, level - 1);
+      }
+    }
+  }
+}
+
+// Hàm chính được gọi từ bên ngoài
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_walk(pagetable, 2); // Bắt đầu từ level cao nhất (Level 2 trong Sv39)
+}
