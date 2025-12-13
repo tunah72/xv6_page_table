@@ -1,0 +1,246 @@
+diff --git a/answers-pgtbl.txt b/answers-pgtbl.txt
+new file mode 100644
+index 0000000..1486c40
+--- /dev/null
++++ b/answers-pgtbl.txt
+@@ -0,0 +1,33 @@
++Speed up system calls
++Question: Which other xv6 system call(s) could be made faster using this shared page? Explain how.
++
++Answer:
++System calls that involve the copyout function or are solely for retrieving information, like getpid, will experience acceleration. 
++This acceleration stems from the elimination of the need for trapping into the operating system, 
++allowing for data retrieval directly in user mode. Consequently, such operations save time by bypassing unnecessary overhead.
++
++
++Print a page table
++Question:   Explain the output of vmprint in terms of Fig 3-4 from the text. 
++            What does page 0 contain? What is in page 2? When running in user mode, 
++            could the process read/write the memory mapped by page 1? What does the third to last page contain?
++
++Answer:
++Page 0: Page 0 contains data and text of the process. 
++        This likely includes the executable code and initialized data segments of the process.
++
++Page 1: Page 1 serves as a guard page to protect the stack (page 2) from overflow caused by accesses to page 0. 
++        Guard pages are often used as a security measure to detect and prevent stack overflow errors.
++
++Page 2: Page 2 contains the stack of the process. 
++        The stack typically grows downwards from high addresses towards lower addresses and is used for storing local variables, 
++        function call information, and other temporary data during program execution.
++
++Page 3 to Last Page: The pages from page 3 to the last page contain the heap, trap frame, and trampoline. 
++                    The heap is used for dynamic memory allocation, while the trap frame stores the processor state when a trap or interrupt occurs. 
++                    The trampoline may be used for context switching or for handling exceptions.
++
++When running in user mode, the process cannot read/write page 1 (the guard page). 
++It is designed this way to protect the stack (page 2) from unauthorized access by the user. 
++The guard page acts as a boundary to detect and prevent stack overflow vulnerabilities. 
++Therefore, attempting to access or modify the guard page would likely result in a memory protection violation or segmentation fault.
+\ No newline at end of file
+diff --git a/gradelib.py b/gradelib.py
+index f0d4934..21dd2bc 100644
+--- a/gradelib.py
++++ b/gradelib.py
+@@ -238,7 +238,7 @@ def make(*target):
+     post_make()
+ 
+ def show_command(cmd):
+-    from pipes import quote
++    from shlex import quote
+     print("\n$", " ".join(map(quote, cmd)))
+ 
+ def maybe_unlink(*paths):
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..487f4f2 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -173,6 +173,7 @@ uint64          walkaddr(pagetable_t, uint64);
+ int             copyout(pagetable_t, uint64, char *, uint64);
+ int             copyin(pagetable_t, char *, uint64, uint64);
+ int             copyinstr(pagetable_t, char *, uint64, uint64);
++void            vmprint(pagetable_t);
+ 
+ // plic.c
+ void            plicinit(void);
+diff --git a/kernel/exec.c b/kernel/exec.c
+index e18bbb6..19d751f 100644
+--- a/kernel/exec.c
++++ b/kernel/exec.c
+@@ -127,6 +127,8 @@ exec(char *path, char **argv)
+   p->trapframe->epc = elf.entry;  // initial program counter = main
+   p->trapframe->sp = sp; // initial stack pointer
+   proc_freepagetable(oldpagetable, oldsz);
++  
++  if(p->pid == 1) vmprint(p->pagetable);
+ 
+   return argc; // this ends up in a0, the first argument to main(argc, argv)
+ 
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 58a8a0b..0c7081a 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -131,6 +131,23 @@ found:
+     release(&p->lock);
+     return 0;
+   }
++  // Allocate a page for USYSCALL.
++  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
++    // Nếu fail, free các thứ đã alloc trước đó (tương tự trapframe)
++    kfree((void*)p->trapframe);
++    p->trapframe = 0;
++    if(p->kstack)
++      kfree((void*)p->kstack);
++    p->kstack = 0;
++    p->pagetable = 0;
++    p->sz = 0;
++    p->pid = 0;
++    p->parent = 0;
++    release(&p->lock);
++    return 0;
++  }
++  memset((char *)p->usyscall, 0, PGSIZE);
++  p->usyscall->pid = p->pid;  // Set PID của process hiện tại
+ 
+   // An empty user page table.
+   p->pagetable = proc_pagetable(p);
+@@ -160,6 +177,9 @@ freeproc(struct proc *p)
+   p->trapframe = 0;
+   if(p->pagetable)
+     proc_freepagetable(p->pagetable, p->sz);
++  if(p->usyscall)
++    kfree((void*)p->usyscall);
++  p->usyscall = 0;
+   p->pagetable = 0;
+   p->sz = 0;
+   p->pid = 0;
+@@ -201,6 +221,14 @@ proc_pagetable(struct proc *p)
+     uvmfree(pagetable, 0);
+     return 0;
+   }
++  // Map the usyscall page just like trapframe, read-only for user.
++  if(mappages(pagetable, USYSCALL, PGSIZE,
++    (uint64)p->usyscall, PTE_R | PTE_U | PTE_V) < 0){
++  uvmunmap(pagetable, TRAPFRAME, 1, 0);
++  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
++  uvmfree(pagetable, 0);
++  return 0;
++  }
+ 
+   return pagetable;
+ }
+@@ -212,6 +240,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
+ {
+   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+   uvmunmap(pagetable, TRAPFRAME, 1, 0);
++  uvmunmap(pagetable, USYSCALL, 1, 0);
+   uvmfree(pagetable, sz);
+ }
+ 
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..700b0c6 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,5 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  struct usyscall *usyscall;   // Page for USYSCALL mapping
+ };
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index 20a01db..e71c193 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -343,6 +343,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_W (1L << 2)
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
++#define PTE_A (1L << 6) // accessed
+ 
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 88644b2..d9493fd 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -75,6 +75,24 @@ int
+ sys_pgaccess(void)
+ {
+   // lab pgtbl: your code here.
++  uint64 startaddr;
++  int npage;
++  uint64 useraddr;
++  argaddr(0, &startaddr);
++  argint(1, &npage);
++  argaddr(2, &useraddr);
++
++  uint64 bitmask = 0;
++  uint64 complement = ~PTE_A;
++  struct proc *p = myproc();
++  for (int i = 0; i < npage; ++i) {
++    pte_t *pte = walk(p->pagetable, startaddr+i*PGSIZE, 0);
++    if (*pte & PTE_A) {
++      bitmask |= (1 << i);
++      *pte &= complement;
++    }
++  }
++  copyout(p->pagetable, useraddr, (char *)&bitmask, sizeof(bitmask));
+   return 0;
+ }
+ #endif
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 5c31e87..1028a1f 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -449,3 +449,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+     return -1;
+   }
+ }
++// Hàm phụ trợ để in đệ quy với thụt đầu dòng (level)
++// level 2: in "..", level 1: in ".. ..", level 0: in ".. .. .."
++void
++vmprint_walk(pagetable_t pagetable, int level)
++{
++  // Có 512 mục (PTE) trong một trang bảng trang (2^9)
++  for(int i = 0; i < 512; i++){
++    pte_t pte = pagetable[i];
++    
++    // Chỉ in nếu PTE hợp lệ (bit PTE_V được bật)
++    if(pte & PTE_V){
++      // In ra theo định dạng yêu cầu của đề bài
++      // Dựa vào level để in số lượng dấu chấm ".."
++      for(int j = 0; j < (3 - level); j++){
++        printf(" ..");
++      }
++      
++      // In index, giá trị pte (hex), và địa chỉ vật lý (pa)
++      uint64 pa = PTE2PA(pte);
++      printf("%d: pte %p pa %p\n", i, pte, pa);
++
++      // Nếu level > 0, nghĩa là node này trỏ tới một bảng trang con (không phải lá)
++      // Tiếp tục đệ quy xuống dưới
++      // (pte & (PTE_R|PTE_W|PTE_X)) == 0  --> Kiểm tra xem đây có phải là node trung gian không
++      if(level > 0){
++        pagetable_t child = (pagetable_t)PTE2PA(pte);
++        vmprint_walk(child, level - 1);
++      }
++    }
++  }
++}
++
++// Hàm chính được gọi từ bên ngoài
++void
++vmprint(pagetable_t pagetable)
++{
++  printf("page table %p\n", pagetable);
++  vmprint_walk(pagetable, 2); // Bắt đầu từ level cao nhất (Level 2 trong Sv39)
++}
+\ No newline at end of file
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..410b14d
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++25
+\ No newline at end of file
