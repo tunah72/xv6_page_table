@@ -1,0 +1,33 @@
+Speed up system calls
+Question: Which other xv6 system call(s) could be made faster using this shared page? Explain how.
+
+Answer:
+System calls that involve the copyout function or are solely for retrieving information, like getpid, will experience acceleration. 
+This acceleration stems from the elimination of the need for trapping into the operating system, 
+allowing for data retrieval directly in user mode. Consequently, such operations save time by bypassing unnecessary overhead.
+
+
+Print a page table
+Question:   Explain the output of vmprint in terms of Fig 3-4 from the text. 
+            What does page 0 contain? What is in page 2? When running in user mode, 
+            could the process read/write the memory mapped by page 1? What does the third to last page contain?
+
+Answer:
+Page 0: Page 0 contains data and text of the process. 
+        This likely includes the executable code and initialized data segments of the process.
+
+Page 1: Page 1 serves as a guard page to protect the stack (page 2) from overflow caused by accesses to page 0. 
+        Guard pages are often used as a security measure to detect and prevent stack overflow errors.
+
+Page 2: Page 2 contains the stack of the process. 
+        The stack typically grows downwards from high addresses towards lower addresses and is used for storing local variables, 
+        function call information, and other temporary data during program execution.
+
+Page 3 to Last Page: The pages from page 3 to the last page contain the heap, trap frame, and trampoline. 
+                    The heap is used for dynamic memory allocation, while the trap frame stores the processor state when a trap or interrupt occurs. 
+                    The trampoline may be used for context switching or for handling exceptions.
+
+When running in user mode, the process cannot read/write page 1 (the guard page). 
+It is designed this way to protect the stack (page 2) from unauthorized access by the user. 
+The guard page acts as a boundary to detect and prevent stack overflow vulnerabilities. 
+Therefore, attempting to access or modify the guard page would likely result in a memory protection violation or segmentation fault.
